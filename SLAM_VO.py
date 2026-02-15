@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple, Dict
 import cv2
 import numpy as np
 
-# ------------ 3D Visulization using VisPy ------------
+# ------------ 3D Visualization using VisPy ------------
 try:
     from vispy import scene
     from vispy.scene import visuals
@@ -15,7 +15,10 @@ try:
 except Exception:
     VISPY_OK = False
 
-# ------------ Helpers ------------
+
+# ============================================================
+# Helpers
+# ============================================================
 
 def build_k_from_image_size(width: int, height: int) -> np.ndarray:
     f = float(max(width, height))
@@ -52,7 +55,48 @@ def load_image_paths(folder: str) -> List[str]:
     return paths
 
 
-# ------------ Error Metrics ------------
+def rotmat_to_quat_xyzw(R: np.ndarray) -> np.ndarray:
+    """
+    Convert rotation matrix to quaternion (x, y, z, w).
+    Stable enough for our usage.
+    """
+    R = np.asarray(R, dtype=np.float64)
+    tr = np.trace(R)
+    if tr > 0:
+        S = np.sqrt(tr + 1.0) * 2.0
+        qw = 0.25 * S
+        qx = (R[2, 1] - R[1, 2]) / S
+        qy = (R[0, 2] - R[2, 0]) / S
+        qz = (R[1, 0] - R[0, 1]) / S
+    else:
+        if (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
+            S = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+            qw = (R[2, 1] - R[1, 2]) / S
+            qx = 0.25 * S
+            qy = (R[0, 1] + R[1, 0]) / S
+            qz = (R[0, 2] + R[2, 0]) / S
+        elif R[1, 1] > R[2, 2]:
+            S = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+            qw = (R[0, 2] - R[2, 0]) / S
+            qx = (R[0, 1] + R[1, 0]) / S
+            qy = 0.25 * S
+            qz = (R[1, 2] + R[2, 1]) / S
+        else:
+            S = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+            qw = (R[1, 0] - R[0, 1]) / S
+            qx = (R[0, 2] + R[2, 0]) / S
+            qy = (R[1, 2] + R[2, 1]) / S
+            qz = 0.25 * S
+    q = np.array([qx, qy, qz, qw], dtype=np.float64)
+    n = np.linalg.norm(q)
+    if n < 1e-12:
+        return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    return q / n
+
+
+# ============================================================
+# Error Metrics
+# ============================================================
 
 def epipolar_errors(F: np.ndarray, pts1: np.ndarray, pts2: np.ndarray) -> np.ndarray:
     pts1_h = np.hstack([pts1, np.ones((len(pts1), 1))])
@@ -93,7 +137,9 @@ def reprojection_error(K: np.ndarray, T_world_cam: np.ndarray, Pw: np.ndarray, u
     return float(np.mean(err)) if len(err) > 0 else float("inf")
 
 
-# ------------ SE(3) utilities + Pose-only Gauss-Newton ------------
+# ============================================================
+# SE(3) utilities + Pose-only Gauss-Newton
+# ============================================================
 
 def _skew(w: np.ndarray) -> np.ndarray:
     wx, wy, wz = float(w[0]), float(w[1]), float(w[2])
@@ -103,10 +149,6 @@ def _skew(w: np.ndarray) -> np.ndarray:
 
 
 def se3_exp(xi: np.ndarray) -> np.ndarray:
-    """
-    Exponential map se(3)->SE(3).
-    xi: (6,) [w(3), v(3)]
-    """
     xi = np.asarray(xi, dtype=np.float64).reshape(6,)
     w = xi[:3]
     v = xi[3:]
@@ -119,7 +161,6 @@ def se3_exp(xi: np.ndarray) -> np.ndarray:
 
     W = _skew(w / theta)
     R = np.eye(3) + np.sin(theta) * W + (1.0 - np.cos(theta)) * (W @ W)
-
     V = np.eye(3) + (1.0 - np.cos(theta)) / theta * W + (theta - np.sin(theta)) / theta * (W @ W)
 
     T[:3, :3] = R
@@ -136,10 +177,6 @@ def huber_weights(r: np.ndarray, delta: float) -> np.ndarray:
 
 
 class PoseOptimizerGN:
-    """
-    Pose-only Gauss-Newton on reprojection error.
-    Numeric Jacobian + Huber robust weights.
-    """
     def __init__(self, K: np.ndarray, huber_delta_px: float = 3.0, eps: float = 1e-4):
         self.K = K.astype(np.float64)
         self.huber_delta_px = float(huber_delta_px)
@@ -162,7 +199,7 @@ class PoseOptimizerGN:
         dbg["gn_reproj_before"] = reprojection_error(self.K, T, Pw, uv)
 
         for it in range(max_iters):
-            r = self._residuals(T, Pw, uv)  # (2N,)
+            r = self._residuals(T, Pw, uv)
             w = huber_weights(r, self.huber_delta_px)
             rw = w * r
 
@@ -201,8 +238,9 @@ class PoseOptimizerGN:
         return T, dbg
 
 
-# ------------ Data Structures - Frame / Point / Map ------------
-
+# ============================================================
+# Data Structures (Frame / Point / Map)
+# ============================================================
 
 @dataclass
 class Frame:
@@ -234,7 +272,7 @@ class Frame:
 @dataclass
 class Point:
     point_id: int
-    xyz_world: np.ndarray  # (3,)
+    xyz_world: np.ndarray
     descriptor: Optional[np.ndarray] = None
     observations: Dict[int, int] = field(default_factory=dict)
     num_obs: int = 0
@@ -247,7 +285,9 @@ class Map:
     voxel_hash: Dict[Tuple[int, int, int], int] = field(default_factory=dict)
 
 
-# ------------ Tracking (VO) + matches before/after ------------
+# ============================================================
+# Tracking (VO) + matches before/after
+# ============================================================
 
 class Tracker:
     def __init__(self, K: np.ndarray):
@@ -274,12 +314,6 @@ class Tracker:
         self.ransac_prob = 0.999
 
     def process_frame(self, frame: Frame) -> Tuple[bool, dict]:
-        """
-        debug includes:
-          - raw_matches: list of cv2.DMatch (one per knn pair, pre-ratio)
-          - good_matches: list of cv2.DMatch (post ratio)
-          - inlier_mask: mask over good_matches (from Essential)
-        """
         debug = {
             "frame_id": frame.frame_id,
             "status": "init",
@@ -313,14 +347,12 @@ class Tracker:
 
         knn = self.matcher.knnMatch(self.prev_frame.descriptors, frame.descriptors, k=2)
 
-        # "raw" visualization: take the best match from each pair if it exists
         raw = []
         for pair in knn:
             if len(pair) >= 1:
                 raw.append(pair[0])
         debug["num_matches_raw"] = len(raw)
 
-        # ratio test
         good = []
         for pair in knn:
             if len(pair) < 2:
@@ -419,7 +451,6 @@ class Tracker:
 
         T_prev_to_curr = to_homogeneous_transform(R, t)
 
-        # accumulate pose
         self.world_T_cam = self.world_T_cam @ T_prev_to_curr
         frame.pose = self.world_T_cam.copy()
 
@@ -431,7 +462,10 @@ class Tracker:
         self.prev_frame = frame
         return True, debug
 
-# ------------ Triangulation and Mapping ------------
+
+# ============================================================
+# Triangulation and Mapping
+# ============================================================
 
 class Mapper:
     def __init__(self, K: np.ndarray):
@@ -536,7 +570,6 @@ class Mapper:
         pts1 = np.float64([kf1.keypoints[m.queryIdx].pt for m in matches])
         pts2 = np.float64([kf2.keypoints[m.trainIdx].pt for m in matches])
 
-        # Geometric verification with F
         F, maskF = None, None
         try:
             F, maskF = cv2.findFundamentalMat(
@@ -570,7 +603,6 @@ class Mapper:
         pts2_in = pts2[inl]
         matches_in = [m for m, keep in zip(matches, inl) if keep]
 
-        # Baseline + parallax gates
         b = self._baseline(kf1, kf2)
         dbg["kf_baseline"] = b
         if b < self.min_baseline:
@@ -583,7 +615,6 @@ class Mapper:
             dbg["kf_status"] = "parallax_too_small"
             return 0, dbg
 
-        # Triangulation
         T1_cw = invert_T(kf1.pose)
         T2_cw = invert_T(kf2.pose)
         P1 = self.K @ T1_cw[:3, :]
@@ -620,7 +651,6 @@ class Mapper:
             dbg["kf_status"] = "depth_rejected"
             return 0, dbg
 
-        # Reprojection gate
         uv1_hat = project_points(self.K, kf1.pose, X)
         uv2_hat = project_points(self.K, kf2.pose, X)
         e1 = np.linalg.norm(uv1_hat - pts1_in, axis=1)
@@ -634,7 +664,6 @@ class Mapper:
             dbg["kf_status"] = "reproj_rejected"
             return 0, dbg
 
-        # Add points with voxel dedup
         added = 0
         for j in range(min(len(X), self.max_new_points)):
             Xw = X[j].astype(np.float64)
@@ -660,7 +689,9 @@ class Mapper:
         return added, dbg
 
 
-# ------------ Relocalization (Using PnP) + returns correspondences/inliers for debugging ------------
+# ============================================================
+# Relocalization (PnP)
+# ============================================================
 
 class RelocalizerPnP:
     def __init__(self, K: np.ndarray):
@@ -751,14 +782,19 @@ class RelocalizerPnP:
 
         return True, dbg, Pw, uv, inliers_idx
 
-# ------------ Loop Closure ------------
-# I left it empty, I will implement later once I finish all the other requirements.
+
+# ============================================================
+# Loop Closure (stub, keep for PDF structure)
+# ============================================================
 
 class LoopClosure:
     def detect(self, current_kf: Frame, slam_map: Map) -> Optional[int]:
         return None
 
-# ------------ VisPy Viewer for Trajectry and map points for 3D visualization ------------
+
+# ============================================================
+# VisPy Viewer (Trajectory + Map points)
+# ============================================================
 
 class VispyMapViewer:
     def __init__(self, title="Trajectory + 3D Map (VisPy)", size=(1100, 800)):
@@ -784,10 +820,8 @@ class VispyMapViewer:
             self.cur_marker.set_data(pts[-1:].copy(), size=10)
 
         if map_points_xyz is not None and len(map_points_xyz) > 0:
-            # Don’t redraw everything every frame; only when map grows
             if map_points_xyz.shape[0] != self._last_map_count:
                 self._last_map_count = map_points_xyz.shape[0]
-                # downsample for performance
                 max_show = 20000
                 X = map_points_xyz
                 if X.shape[0] > max_show:
@@ -800,15 +834,19 @@ class VispyMapViewer:
     def process_events(self):
         self.canvas.app.process_events()
 
-# ------------ Main ------------
+
+# ============================================================
+# Main
+# ============================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Monocular SLAM MVP (VO + Mapping + PnP + GN), VisPy visualization")
+    parser = argparse.ArgumentParser(description="Monocular SLAM MVP (VO + Mapping + PnP + GN), VisPy + traj_est save")
     parser.add_argument("--data_dir", type=str, required=True, help="Path to rgb folder with images")
     parser.add_argument("--keyframe_stride", type=int, default=10, help="Make a keyframe every N frames")
     parser.add_argument("--pnp_stride", type=int, default=10, help="Run PnP every N frames")
     parser.add_argument("--gn_iters", type=int, default=8, help="Gauss-Newton iterations after PnP")
     parser.add_argument("--show_every", type=int, default=1, help="Update visualization every N frames")
+    parser.add_argument("--traj_out", type=str, default="traj_est.txt", help="Trajectory output file (TUM format)")
     args = parser.parse_args()
 
     image_paths = load_image_paths(args.data_dir)
@@ -828,10 +866,8 @@ def main():
     slam_map = Map()
     loop = LoopClosure()  # stub (kept for PDF structure)
 
-    # PDF: window 1 (image)
+    # PDF windows
     cv2.namedWindow("image_keypoints", cv2.WINDOW_NORMAL)
-
-    # PDF: matches before/after filtering
     cv2.namedWindow("matches_raw", cv2.WINDOW_NORMAL)
     cv2.namedWindow("matches_filtered", cv2.WINDOW_NORMAL)
 
@@ -839,10 +875,15 @@ def main():
     if VISPY_OK:
         viewer3d = VispyMapViewer()
     else:
-        print("[WARN] VisPy not available -> second window requirement won't be satisfied until you install it.")
+        print("[WARN] VisPy not available -> viewer disabled.")
+
+    # For match visualization, we store previous image+keypoints ourselves (cleanly).
+    prev_img_for_matches = None
+    prev_kps_for_matches = None
 
     last_keyframe: Optional[Frame] = None
     traj_xyz: List[Tuple[float, float, float]] = [(0.0, 0.0, 0.0)]
+    traj_rows: List[Tuple[float, float, float, float, float, float, float, float]] = []  # (ts, tx,ty,tz, qx,qy,qz,qw)
 
     for i, p in enumerate(image_paths):
         img = cv2.imread(p, cv2.IMREAD_COLOR)
@@ -859,12 +900,16 @@ def main():
 
         ok_vo, dbg = tracker.process_frame(frame)
 
-        # trajectory update if pose exists
+        # --- trajectory + file rows
         if frame.pose is not None:
-            x, y, z = frame.pose[:3, 3].astype(np.float64)
-            traj_xyz.append((float(x), float(y), float(z)))
+            t = frame.pose[:3, 3].astype(np.float64)
+            R = frame.pose[:3, :3].astype(np.float64)
+            qxyzw = rotmat_to_quat_xyzw(R)
+            traj_xyz.append((float(t[0]), float(t[1]), float(t[2])))
+            traj_rows.append((float(timestamp), float(t[0]), float(t[1]), float(t[2]),
+                              float(qxyzw[0]), float(qxyzw[1]), float(qxyzw[2]), float(qxyzw[3])))
 
-        # ===== Mapping: keyframe + triangulation
+        # ===== Mapping
         if frame.pose is not None and (i % args.keyframe_stride == 0):
             mapper.make_keyframe(frame, slam_map)
 
@@ -878,7 +923,7 @@ def main():
 
             last_keyframe = frame
 
-        # ===== Relocalization (PnP) + Optimization (GN)
+        # ===== Relocalization + Optimization
         if frame.pose is not None and (i % args.pnp_stride == 0):
             ok_pnp, pnp_dbg, Pw, uv, inl_idx = relocalizer.localize(frame, slam_map)
             dbg["pnp_status"] = pnp_dbg["status"]
@@ -888,7 +933,6 @@ def main():
             dbg["reproj_after_pnp"] = pnp_dbg["pnp_reproj_after"]
 
             if ok_pnp and inl_idx is not None and len(inl_idx) >= 10:
-                # cap for speed
                 max_use = 200
                 idx_use = inl_idx
                 if len(idx_use) > max_use:
@@ -903,42 +947,87 @@ def main():
             else:
                 dbg["gn_status"] = "skip"
 
-        # ------------ OpenCV visualization windows ------------
+        # ============================================================
+        # OpenCV visualization windows
+        # ============================================================
+
         vis = img.copy()
         if frame.keypoints is not None:
-            vis = cv2.drawKeypoints(vis, frame.keypoints, None, flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+            vis = cv2.drawKeypoints(vis, frame.keypoints, None,
+                                    flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
 
-        # overlay line 1
         text1 = (f"id={i} kp={dbg.get('num_keypoints',0)} "
                  f"rawM={dbg.get('num_matches_raw',0)} goodM={dbg.get('num_matches_good',0)} "
                  f"inl={dbg.get('num_inliers',0)} st={dbg.get('status','')}")
         cv2.putText(vis, text1, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (50, 255, 50), 2)
 
-        # overlay line 2 (mapping + pnp + gn)
         text2 = (f"map={len(slam_map.points)} kf={len(slam_map.keyframes)} "
                  f"new={dbg.get('triangulated_new_points',0)} kfSt={dbg.get('kf_status','-')} "
-                 f"pnp={dbg.get('pnp_status','-')} rp0={dbg.get('reproj_before','-')} "
-                 f"rpP={dbg.get('reproj_after_pnp','-')} rpGN={dbg.get('reproj_after_gn','-')}")
+                 f"pnp={dbg.get('pnp_status','-')} rpP={dbg.get('reproj_after_pnp','-')} "
+                 f"rpGN={dbg.get('reproj_after_gn','-')}")
         cv2.putText(vis, text2, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (50, 200, 255), 2)
 
         cv2.imshow("image_keypoints", vis)
 
-        # ===== Matches windows (before/after filtering)
-        if tracker.prev_frame is not None and tracker.prev_frame is not frame:
-            prev = tracker.prev_frame  # careful: tracker.prev_frame got set to frame at end of process_frame; so use dbg data instead
-        # Better: use dbg matches with the *previous* frame stored in tracker before update.
-        # We can reconstruct using tracker.prev_frame image only if we stored it earlier; simplest:
-        # Use dbg matches but draw using the previous frame from tracker is hard after update.
-        # So: we draw matches using the last successful "prev_frame" in tracker BEFORE overwriting.
-        # Easiest: keep a copy of the last frame used for matching:
-        # We'll do a small workaround: build raw/filtered views only if we have dbg matches and also have tracker.prev_frame set.
-        # Here tracker.prev_frame == frame after process_frame. So keep our own prev_for_vis.
-        # We'll handle it by storing externally:
+        # Matches: raw vs filtered (use the stored previous image/kps)
+        if prev_img_for_matches is not None and prev_kps_for_matches is not None and frame.keypoints is not None:
+            raw = dbg.get("raw_matches", None) or []
+            good = dbg.get("good_matches", None) or []
+            inl_mask = dbg.get("inlier_mask", None)
 
-        # (We implement that external store below via static variables)
-        # ---------------------------------------------------------
+            raw_show = raw[:80]
+            if len(raw_show) > 0:
+                raw_img = cv2.drawMatches(
+                    prev_img_for_matches, prev_kps_for_matches,
+                    frame.image_bgr, frame.keypoints,
+                    raw_show, None,
+                    flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
+                )
+            else:
+                raw_img = np.zeros((200, 600, 3), dtype=np.uint8)
 
-        # ===== VisPy window (trajectory + map points) (required)
+            good_show = good[:80]
+            if len(good_show) > 0:
+                if inl_mask is not None and len(inl_mask) == len(good):
+                    subset_mask = [1 if bool(x) else 0 for x in inl_mask[:len(good_show)]]
+                else:
+                    subset_mask = None
+
+                try:
+                    filt_img = cv2.drawMatches(
+                        prev_img_for_matches, prev_kps_for_matches,
+                        frame.image_bgr, frame.keypoints,
+                        good_show, None,
+                        matchColor=None,
+                        singlePointColor=None,
+                        matchesMask=subset_mask,
+                        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
+                        matchesThickness=1
+                    )
+                except TypeError:
+                    filt_img = cv2.drawMatches(
+                        prev_img_for_matches, prev_kps_for_matches,
+                        frame.image_bgr, frame.keypoints,
+                        good_show, None,
+                        matchColor=None,
+                        singlePointColor=None,
+                        matchesMask=subset_mask,
+                        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
+                    )
+            else:
+                filt_img = np.zeros((200, 600, 3), dtype=np.uint8)
+
+            cv2.imshow("matches_raw", raw_img)
+            cv2.imshow("matches_filtered", filt_img)
+
+        # Update stored previous for next iteration
+        prev_img_for_matches = frame.image_bgr.copy()
+        prev_kps_for_matches = frame.keypoints
+
+        # ============================================================
+        # VisPy window
+        # ============================================================
+
         if viewer3d is not None and (i % args.show_every == 0):
             if len(slam_map.points) > 0:
                 Xmap = np.vstack([mp.xyz_world.reshape(1, 3) for mp in slam_map.points]).astype(np.float32)
@@ -951,78 +1040,20 @@ def main():
         if key in (27, ord('q')):
             break
 
-        # ------------ Store stuff for matches visualization in the NEXT loop
-        # We'll store the "previous frame" data ourselves.
-        if not hasattr(main, "_prev_img"):
-            main._prev_img = None
-            main._prev_kps = None
-            main._prev_id = None
-
-        # show matches using *current* dbg matches with stored prev
-        if main._prev_img is not None and main._prev_kps is not None and frame.keypoints is not None:
-            raw = dbg.get("raw_matches", None) or []
-            good = dbg.get("good_matches", None) or []
-            inl_mask = dbg.get("inlier_mask", None)
-
-            # raw matches (cap)
-            raw_show = raw[:80]
-            if len(raw_show) > 0:
-                raw_img = cv2.drawMatches(
-                    main._prev_img, main._prev_kps,
-                    frame.image_bgr, frame.keypoints,
-                    raw_show, None,
-                    flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
-                )
-            else:
-                raw_img = np.zeros((200, 600, 3), dtype=np.uint8)
-
-            # filtered matches (cap + optional inlier mask)
-            good_show = good[:80]
-            if len(good_show) > 0:
-                # If we have an inlier mask over full good list, mask the displayed subset
-                # If we have an inlier mask over full good list, mask the displayed subset
-                if inl_mask is not None and len(inl_mask) == len(good):
-                    # IMPORTANT: OpenCV drawMatches expects list[int] (0/1), not bools
-                    subset_mask = [1 if bool(x) else 0 for x in inl_mask[:len(good_show)]]
-                else:
-                    subset_mask = None
-
-                # Some OpenCV 4.12 builds require matchesThickness explicitly
-                try:
-                    filt_img = cv2.drawMatches(
-                        main._prev_img, main._prev_kps,
-                        frame.image_bgr, frame.keypoints,
-                        good_show, None,
-                        matchColor=None,
-                        singlePointColor=None,
-                        matchesMask=subset_mask,
-                        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
-                        matchesThickness=1
-                    )
-                except TypeError:
-                    # fallback for builds that don't support matchesThickness
-                    filt_img = cv2.drawMatches(
-                        main._prev_img, main._prev_kps,
-                        frame.image_bgr, frame.keypoints,
-                        good_show, None,
-                        matchColor=None,
-                        singlePointColor=None,
-                        matchesMask=subset_mask,
-                        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
-                    )
-
-            else:
-                filt_img = np.zeros((200, 600, 3), dtype=np.uint8)
-
-            cv2.imshow("matches_raw", raw_img)
-            cv2.imshow("matches_filtered", filt_img)
-
-        # update prev for next frame
-        main._prev_img = frame.image_bgr.copy()
-        main._prev_kps = frame.keypoints
-        main._prev_id = frame.frame_id
-
     cv2.destroyAllWindows()
+
+    # ============================================================
+    # Save trajectory (TUM format)
+    # ============================================================
+    try:
+        with open(args.traj_out, "w", encoding="utf-8") as f:
+            for row in traj_rows:
+                ts, tx, ty, tz, qx, qy, qz, qw = row
+                f.write(f"{ts:.6f} {tx:.9f} {ty:.9f} {tz:.9f} {qx:.9f} {qy:.9f} {qz:.9f} {qw:.9f}\n")
+        print(f"[SAVE] Trajectory written: {args.traj_out} ({len(traj_rows)} poses)")
+    except Exception as e:
+        print(f"[WARN] Failed to write traj file: {e}")
+
     print("[DONE] run finished.")
     print(f"Keyframes: {len(slam_map.keyframes)} | Map points: {len(slam_map.points)}")
 
